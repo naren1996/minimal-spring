@@ -1,6 +1,6 @@
-# Minimal Spring + Spring Security on Tomcat: A Step-by-Step Guide
+# Minimal Spring + Spring Security on Tomcat: A Step-by-Step Guide (web.xml edition)
 
-This guide walks you through building a minimal **Spring Framework** (not Spring Boot) web application with **Spring Security**, deployed to **Apache Tomcat**. Every file is explained — what it does, why it exists, and how it connects to the rest.
+This guide walks you through building a minimal **Spring Framework** (not Spring Boot) web application with **Spring Security**, deployed to **Apache Tomcat**. It uses the traditional **`web.xml`** approach that you'll encounter in most existing codebases. Every file is explained — what it does, why it exists, and how it connects to the rest.
 
 ## What Are We Building?
 
@@ -9,6 +9,7 @@ A web application with:
 - A **login page** (`/login`) with a username/password form
 - **Spring Security** protecting all pages and handling authentication
 - **WAR packaging** so Tomcat can deploy and run it
+- **`web.xml`** as the central wiring file — the traditional way most Spring apps are configured
 
 Spring Boot normally hides all the wiring behind auto-configuration. Here, we do every piece manually so you can see exactly what happens.
 
@@ -32,17 +33,17 @@ minimal-spring/
 ├── pom.xml                         ← Maven build configuration
 └── src/main/
     ├── java/com/example/
-    │   ├── AppInitializer.java     ← Replaces web.xml (Servlet 3.0+ entry point)
     │   ├── config/
     │   │   ├── AppConfig.java      ← Root application context
     │   │   ├── WebConfig.java      ← Spring MVC configuration
-    │   │   ├── SecurityConfig.java ← Spring Security rules
-    │   │   └── SecurityInitializer.java ← Registers security filters
+    │   │   └── SecurityConfig.java ← Spring Security rules
     │   └── controller/
     │       └── HomeController.java ← HTTP endpoints
-    └── webapp/WEB-INF/views/
-        ├── home.jsp                ← Secured home page
-        └── login.jsp               ← Login form
+    └── webapp/WEB-INF/
+        ├── web.xml                 ← The central wiring file (THIS is the key file)
+        └── views/
+            ├── home.jsp            ← Secured home page
+            └── login.jsp           ← Login form
 ```
 
 ---
@@ -66,8 +67,6 @@ minimal-spring/
 | `jakarta.servlet.jsp.jstl-api` | JSTL tag library API for JSP views. |
 | `jakarta.servlet.jsp.jstl` (glassfish) | JSTL implementation. |
 
-**`maven-war-plugin` with `failOnMissingWebXml=false`** — Since we use Java-based configuration instead of a `web.xml` file, we need to tell the WAR plugin not to fail when it can't find one.
-
 **Java 17 compiler settings** — Spring 6 requires Java 17 as its minimum. The `maven.compiler.source` and `maven.compiler.target` properties ensure Maven compiles with Java 17.
 
 ```xml
@@ -82,42 +81,102 @@ minimal-spring/
 
 ---
 
-## Step 2: Create `AppInitializer.java` — The Application Entry Point
+## Step 2: Create `web.xml` — The Central Wiring File
 
-**What we're achieving:** Tell Tomcat how to start our Spring application — without writing any XML.
+**What we're achieving:** Tell Tomcat how to start Spring, where to find our configuration, and how to wire up Spring Security — all in one file.
 
-**File:** `src/main/java/com/example/AppInitializer.java`
+**File:** `src/main/webapp/WEB-INF/web.xml`
 
-### How it works
+This is **the most important file** in a traditional Spring application. It's the deployment descriptor that Tomcat reads when it deploys the WAR. Think of it as the "main()" of a web application — it tells the Servlet container what to create and in what order.
 
-In the old days, you would write a `web.xml` file to register Spring's `DispatcherServlet`. Since Servlet 3.0, there's a better way: the **`WebApplicationInitializer`** interface. Tomcat discovers classes implementing this interface automatically via Java's `ServiceLoader` mechanism (specifically, through `SpringServletContainerInitializer` which is registered as a `ServletContainerInitializer`).
+`web.xml` does three things for us:
 
-We extend `AbstractAnnotationConfigDispatcherServletInitializer`, which does the heavy lifting. We just override three methods:
+### 2a. Create the Root Application Context (ContextLoaderListener)
 
-```java
-// Classes loaded into the ROOT application context (shared beans: security, services, data)
-protected Class<?>[] getRootConfigClasses() {
-    return new Class<?>[] { AppConfig.class, SecurityConfig.class };
-}
+```xml
+<context-param>
+    <param-name>contextClass</param-name>
+    <param-value>org.springframework.web.context.support.AnnotationConfigWebApplicationContext</param-value>
+</context-param>
 
-// Classes loaded into the SERVLET application context (web-tier: controllers, view resolvers)
-protected Class<?>[] getServletConfigClasses() {
-    return new Class<?>[] { WebConfig.class };
-}
+<context-param>
+    <param-name>contextConfigLocation</param-name>
+    <param-value>com.example.config.AppConfig, com.example.config.SecurityConfig</param-value>
+</context-param>
 
-// URL patterns the DispatcherServlet handles
-protected String[] getServletMappings() {
-    return new String[] { "/" };
-}
+<listener>
+    <listener-class>org.springframework.web.context.ContextLoaderListener</listener-class>
+</listener>
 ```
 
-### Why two separate contexts?
+**What this does:** When Tomcat starts, the `ContextLoaderListener` creates the **root Spring ApplicationContext**. This is the parent context that holds beans shared across the entire application — security configuration, services, data sources, etc.
 
-Spring MVC uses a **parent-child context** pattern:
-- **Root context** (parent): Holds beans shared across the entire application — security configuration, services, data sources. Created first.
-- **Servlet context** (child): Holds web-tier beans — controllers, view resolvers. Can see beans from the root context, but not vice versa.
+**`contextClass`** — Tells Spring to use `AnnotationConfigWebApplicationContext`, meaning our configuration lives in Java `@Configuration` classes (not XML bean files). Without this parameter, Spring defaults to looking for an `applicationContext.xml` file.
 
-This separation matters because Spring Security's filters operate at the **servlet container level** (before `DispatcherServlet`), so they must live in the root context, not the servlet context.
+**`contextConfigLocation`** — Lists the `@Configuration` classes to load into the root context: `AppConfig` (component scanning) and `SecurityConfig` (authentication/authorization rules).
+
+**Why a listener?** A `ServletContextListener` runs code when the web application starts and stops. `ContextLoaderListener` uses this to create the Spring context on startup and destroy it on shutdown.
+
+### 2b. Register the Spring Security Filter (DelegatingFilterProxy)
+
+```xml
+<filter>
+    <filter-name>springSecurityFilterChain</filter-name>
+    <filter-class>org.springframework.web.filter.DelegatingFilterProxy</filter-class>
+</filter>
+
+<filter-mapping>
+    <filter-name>springSecurityFilterChain</filter-name>
+    <url-pattern>/*</url-pattern>
+</filter-mapping>
+```
+
+**What this does:** Registers Spring Security as a servlet filter that intercepts **every** HTTP request (`/*`) before it reaches the DispatcherServlet.
+
+**`DelegatingFilterProxy`** — This is a bridge between the Servlet world and the Spring world. It's a standard servlet filter that delegates all its work to a Spring bean. The bean it delegates to has the same name as the `<filter-name>`: `springSecurityFilterChain`.
+
+**Why `springSecurityFilterChain`?** — This exact name is critical. When you use `@EnableWebSecurity`, Spring Security automatically creates a bean called `springSecurityFilterChain` in the ApplicationContext. The `DelegatingFilterProxy` looks up this bean by name and forwards every request to it. If you change the `<filter-name>`, the lookup fails and security doesn't work.
+
+**Why `/*` and not `/`?** — `/*` matches all requests including JSPs and static resources. `/` would only match requests handled by servlets, potentially letting some requests bypass security.
+
+### 2c. Register the DispatcherServlet (Spring MVC Front Controller)
+
+```xml
+<servlet>
+    <servlet-name>dispatcher</servlet-name>
+    <servlet-class>org.springframework.web.servlet.DispatcherServlet</servlet-class>
+    <init-param>
+        <param-name>contextClass</param-name>
+        <param-value>org.springframework.web.context.support.AnnotationConfigWebApplicationContext</param-value>
+    </init-param>
+    <init-param>
+        <param-name>contextConfigLocation</param-name>
+        <param-value>com.example.config.WebConfig</param-value>
+    </init-param>
+    <load-on-startup>1</load-on-startup>
+</servlet>
+
+<servlet-mapping>
+    <servlet-name>dispatcher</servlet-name>
+    <url-pattern>/</url-pattern>
+</servlet-mapping>
+```
+
+**What this does:** Creates Spring MVC's `DispatcherServlet` and maps it to handle all requests at `/`.
+
+**`DispatcherServlet`** — This is the front controller pattern. Every HTTP request comes to this single servlet, which then dispatches it to the appropriate `@Controller` method based on the URL mapping.
+
+**Its own context** — The DispatcherServlet creates its **own** `ApplicationContext` (child of the root context). `contextConfigLocation` points to `WebConfig`, which holds web-tier beans: controllers, view resolvers, etc. This child context can see beans from the root context (security, services), but not vice versa.
+
+**`load-on-startup=1`** — Tells Tomcat to create this servlet immediately on startup, not on the first request. This means Spring MVC initializes when Tomcat starts, so the first user request doesn't experience a slow startup.
+
+### The order matters
+
+When Tomcat reads `web.xml`, things happen in this order:
+1. `<context-param>` values are read
+2. `<listener>` — `ContextLoaderListener` creates the root Spring context (loads `AppConfig` + `SecurityConfig`)
+3. `<filter>` — `DelegatingFilterProxy` is registered (it will look up `springSecurityFilterChain` from the root context)
+4. `<servlet>` — `DispatcherServlet` creates its child context (loads `WebConfig`) because `load-on-startup=1`
 
 ---
 
@@ -137,7 +196,7 @@ public class AppConfig {
 - `@Configuration` — Marks this class as a source of Spring bean definitions.
 - `@ComponentScan("com.example")` — Tells Spring to scan the `com.example` package (and sub-packages) for annotated classes (`@Controller`, `@Service`, `@Component`, etc.) and register them as beans.
 
-In a larger application, this is where you'd define service beans, data sources, transaction managers, etc.
+This class is loaded by `ContextLoaderListener` because we listed it in `contextConfigLocation` in `web.xml`. In a larger application, this is where you'd define service beans, data sources, transaction managers, etc.
 
 ---
 
@@ -168,7 +227,7 @@ public class WebConfig implements WebMvcConfigurer {
 
 **`InternalResourceViewResolver`** — When a controller method returns the string `"home"`, the view resolver translates it to the path `/WEB-INF/views/home.jsp`. The prefix and suffix are prepended and appended to the view name.
 
-**Why `implements WebMvcConfigurer`?** — This interface lets you customize Spring MVC's defaults (add interceptors, configure CORS, register formatters, etc.). We don't override any methods here, but it's the standard pattern for MVC configuration classes.
+This class is loaded by the `DispatcherServlet` because we listed it in the servlet's `contextConfigLocation` in `web.xml`.
 
 ---
 
@@ -222,37 +281,17 @@ public UserDetailsService userDetailsService() {
 
 This creates a single in-memory user for testing. `withDefaultPasswordEncoder()` is **deprecated** — it's marked as such because it's not suitable for production (it uses a weak encoder and hardcoded credentials). For a tutorial, it's perfectly fine. In production, you would use `BCryptPasswordEncoder` with a database-backed `UserDetailsService`.
 
+### How this connects to web.xml
+
+This class is loaded into the **root context** by `ContextLoaderListener` (because we listed `SecurityConfig` in the root `contextConfigLocation`). The `@EnableWebSecurity` annotation causes Spring Security to create a bean named `springSecurityFilterChain`. The `DelegatingFilterProxy` declared in `web.xml` then finds this bean by name and delegates all filtering to it.
+
 ### CSRF protection
 
 Spring Security 6 enables CSRF protection by default. This means every `POST` request must include a valid CSRF token. Our JSP forms include it as a hidden field (`${_csrf.parameterName}` / `${_csrf.token}`). If you forget this, form submissions will fail with a 403 Forbidden error.
 
 ---
 
-## Step 6: Create `SecurityInitializer.java` — Register the Security Filter
-
-**What we're achieving:** Wire Spring Security's filter chain into Tomcat's request processing pipeline.
-
-**File:** `src/main/java/com/example/config/SecurityInitializer.java`
-
-```java
-public class SecurityInitializer extends AbstractSecurityWebApplicationInitializer {
-    // Intentionally empty
-}
-```
-
-**This class looks like dead code — but it's critical.** Its mere existence causes Spring Security's `DelegatingFilterProxy` (named `springSecurityFilterChain`) to be registered as a servlet filter with Tomcat. Every HTTP request passes through this filter before reaching `DispatcherServlet`.
-
-Without this class:
-- Your `SecurityConfig` bean exists in the Spring context
-- But no servlet filter invokes it
-- All your security rules are ignored
-- Every page is accessible without authentication
-
-**Do not delete this class**, even though it's empty.
-
----
-
-## Step 7: Create `HomeController.java` — The HTTP Endpoints
+## Step 6: Create `HomeController.java` — The HTTP Endpoints
 
 **What we're achieving:** Define the two pages in our application — the secured home page and the login page.
 
@@ -280,7 +319,7 @@ public class HomeController {
 
 ---
 
-## Step 8: Create the JSP Views
+## Step 7: Create the JSP Views
 
 **What we're achieving:** Create the HTML pages the user actually sees — a login form and a secured home page.
 
@@ -308,7 +347,7 @@ Key elements:
 
 ---
 
-## Step 9: Build the Application
+## Step 8: Build the Application
 
 **What we're achieving:** Compile the code, resolve dependencies, and package everything into a `.war` file.
 
@@ -326,9 +365,28 @@ If the build succeeds, you'll see:
 [INFO] Building war: .../target/minimal-spring-1.0-SNAPSHOT.war
 ```
 
+### What's inside the WAR?
+
+```
+minimal-spring-1.0-SNAPSHOT.war
+├── WEB-INF/
+│   ├── web.xml                          ← Tomcat reads this first
+│   ├── classes/                         ← Your compiled .class files
+│   │   └── com/example/...
+│   ├── lib/                             ← All dependency JARs
+│   │   ├── spring-webmvc-6.1.14.jar
+│   │   ├── spring-security-web-6.2.7.jar
+│   │   └── ...
+│   └── views/
+│       ├── home.jsp
+│       └── login.jsp
+├── META-INF/
+│   └── MANIFEST.MF
+```
+
 ---
 
-## Step 10: Deploy to Tomcat
+## Step 9: Deploy to Tomcat
 
 **What we're achieving:** Get Tomcat to serve our application.
 
@@ -353,7 +411,7 @@ If you rename the WAR to `ROOT.war`, it deploys at the root context path (`/`).
 
 ---
 
-## Step 11: Verify It Works
+## Step 10: Verify It Works
 
 1. **Open** `http://localhost:8080/minimal-spring/` in your browser
 2. **Expect a redirect** to `http://localhost:8080/minimal-spring/login` — Spring Security blocks the unauthenticated request and redirects to the login page
@@ -372,12 +430,12 @@ Here's what happens when a browser requests `http://localhost:8080/minimal-sprin
 Browser
   │
   ▼
-Tomcat (Servlet Container)
+Tomcat reads web.xml and sets up:
   │
   ▼
 DelegatingFilterProxy ("springSecurityFilterChain")
-  │  ← Registered by SecurityInitializer
-  │  ← Configured by SecurityConfig
+  │  ← Declared in web.xml as a <filter>
+  │  ← Delegates to the bean created by SecurityConfig
   │
   ├─ User NOT authenticated? → Redirect to /login
   │
@@ -385,7 +443,7 @@ DelegatingFilterProxy ("springSecurityFilterChain")
   │
   ▼
 DispatcherServlet
-  │  ← Registered by AppInitializer
+  │  ← Declared in web.xml as a <servlet>
   │  ← Configured by WebConfig
   │
   ▼
@@ -402,6 +460,31 @@ home.jsp → HTML Response → Browser
 
 ---
 
+## How web.xml Connects Everything — The Big Picture
+
+```
+web.xml
+  │
+  ├── ContextLoaderListener
+  │     └── Creates ROOT ApplicationContext
+  │           ├── Loads AppConfig.java     → @ComponentScan
+  │           └── Loads SecurityConfig.java → @EnableWebSecurity
+  │                 └── Creates bean: "springSecurityFilterChain"
+  │
+  ├── DelegatingFilterProxy (filter-name: "springSecurityFilterChain")
+  │     └── Looks up bean "springSecurityFilterChain" from root context
+  │           └── Filters every request through Spring Security
+  │
+  └── DispatcherServlet
+        └── Creates CHILD ApplicationContext
+              └── Loads WebConfig.java → @EnableWebMvc + ViewResolver
+                    └── Dispatches requests to @Controller methods
+```
+
+The key insight: **`web.xml` is the glue**. It tells Tomcat to create the Spring contexts, register the security filter, and set up the DispatcherServlet. The Java `@Configuration` classes define **what** the beans do; `web.xml` defines **when and where** they're loaded.
+
+---
+
 ## Common Pitfalls
 
 ### 1. Wrong Tomcat Version
@@ -414,10 +497,10 @@ home.jsp → HTML Response → Browser
 **Cause:** Spring Security rejects POST requests without a valid CSRF token.
 **Fix:** Add `<input type="hidden" name="${_csrf.parameterName}" value="${_csrf.token}" />` to every form.
 
-### 3. Deleted `SecurityInitializer.java`
+### 3. Wrong Filter Name in web.xml
 **Symptom:** Security rules are ignored — all pages are accessible without login.
-**Cause:** Without this class, the Spring Security filter chain is never registered with Tomcat.
-**Fix:** Restore the class. It can be empty — its existence is what matters.
+**Cause:** The `<filter-name>` is not `springSecurityFilterChain`, so `DelegatingFilterProxy` can't find the Spring Security bean.
+**Fix:** The `<filter-name>` must be exactly `springSecurityFilterChain`.
 
 ### 4. Application Loads at Wrong URL
 **Symptom:** `http://localhost:8080/` shows 404, but `http://localhost:8080/minimal-spring/` works.
@@ -428,3 +511,24 @@ home.jsp → HTML Response → Browser
 **Symptom:** Browser shows JSP source code instead of rendered HTML.
 **Cause:** JSP engine not available or misconfigured.
 **Fix:** Ensure Tomcat has the JSP engine (it does by default). Check that views are under `webapp/WEB-INF/views/` and the view resolver prefix/suffix match.
+
+### 6. Missing contextClass Parameter
+**Symptom:** `FileNotFoundException: Could not open ServletContext resource [/WEB-INF/applicationContext.xml]`
+**Cause:** Without the `contextClass` parameter, Spring defaults to XML-based configuration and looks for `applicationContext.xml`.
+**Fix:** Add the `contextClass` parameter set to `AnnotationConfigWebApplicationContext` (as shown in our `web.xml`).
+
+---
+
+## web.xml vs. Java-Based Configuration — A Quick Comparison
+
+You may see some projects that don't have a `web.xml` at all. They use Java classes instead:
+
+| web.xml Approach (this guide) | Java Approach |
+|-----|-----|
+| `<listener>` + `ContextLoaderListener` | `AbstractAnnotationConfigDispatcherServletInitializer` |
+| `<filter>` + `DelegatingFilterProxy` | `AbstractSecurityWebApplicationInitializer` |
+| `<servlet>` + `DispatcherServlet` | `AbstractAnnotationConfigDispatcherServletInitializer` |
+
+Both approaches do exactly the same thing — they register the same components with Tomcat. The `web.xml` approach is older and more widely used in existing codebases. The Java approach (Servlet 3.0+) is newer and avoids XML, but can be harder to understand because the wiring is hidden inside abstract base classes.
+
+This guide uses `web.xml` because it makes the wiring **explicit and visible**. When you read `web.xml`, you can see at a glance: "there's a listener, a filter, and a servlet" — the three pillars of a Spring web application.

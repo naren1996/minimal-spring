@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee
+                             https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
+         version="6.0">
+
+    <!--
+        ==========================================================
+        1. ROOT APPLICATION CONTEXT (shared beans: security, services)
+        ==========================================================
+        ContextLoaderListener creates the ROOT Spring ApplicationContext
+        when Tomcat starts up. This context holds beans shared across
+        the entire application — security configuration, services, etc.
+
+        contextConfigLocation tells Spring which Java @Configuration
+        classes to load into this root context.
+    -->
+    <context-param>
+        <param-name>contextClass</param-name>
+        <param-value>org.springframework.web.context.support.AnnotationConfigWebApplicationContext</param-value>
+    </context-param>
+
+    <context-param>
+        <param-name>contextConfigLocation</param-name>
+        <param-value>com.example.config.AppConfig, com.example.config.SecurityConfig</param-value>
+    </context-param>
+
+    <listener>
+        <listener-class>org.springframework.web.context.ContextLoaderListener</listener-class>
+    </listener>
+
+    <!--
+        ==========================================================
+        2. SPRING SECURITY FILTER
+        ==========================================================
+        DelegatingFilterProxy is a servlet filter that delegates to
+        a Spring bean named "springSecurityFilterChain". Spring Security
+        automatically creates this bean when you use @EnableWebSecurity.
+
+        Every HTTP request passes through this filter BEFORE reaching
+        the DispatcherServlet. This is how Spring Security intercepts
+        requests to check authentication and authorization.
+
+        The filter-name MUST be "springSecurityFilterChain" — this is
+        the exact bean name that Spring Security registers.
+    -->
+    <filter>
+        <filter-name>springSecurityFilterChain</filter-name>
+        <filter-class>org.springframework.web.filter.DelegatingFilterProxy</filter-class>
+    </filter>
+
+    <filter-mapping>
+        <filter-name>springSecurityFilterChain</filter-name>
+        <url-pattern>/*</url-pattern>
+    </filter-mapping>
+
+    <!--
+        ==========================================================
+        3. DISPATCHER SERVLET (Spring MVC front controller)
+        ==========================================================
+        DispatcherServlet is Spring MVC's front controller. It receives
+        all HTTP requests (mapped to "/") and dispatches them to the
+        appropriate @Controller methods.
+
+        It has its OWN ApplicationContext (child of the root context)
+        that holds web-tier beans: controllers, view resolvers, etc.
+        This child context can see beans from the root context, but
+        not vice versa.
+
+        contextClass tells it to use Java @Configuration (not XML).
+        contextConfigLocation points to the MVC configuration class.
+        load-on-startup=1 means it initializes when Tomcat starts
+        (not on first request).
+    -->
+    <servlet>
+        <servlet-name>dispatcher</servlet-name>
+        <servlet-class>org.springframework.web.servlet.DispatcherServlet</servlet-class>
+        <init-param>
+            <param-name>contextClass</param-name>
+            <param-value>org.springframework.web.context.support.AnnotationConfigWebApplicationContext</param-value>
+        </init-param>
+        <init-param>
+            <param-name>contextConfigLocation</param-name>
+            <param-value>com.example.config.WebConfig</param-value>
+        </init-param>
+        <load-on-startup>1</load-on-startup>
+    </servlet>
+
+    <servlet-mapping>
+        <servlet-name>dispatcher</servlet-name>
+        <url-pattern>/</url-pattern>
+    </servlet-mapping>
+
+</web-app>
